@@ -189,6 +189,42 @@ button:disabled { opacity: 0.6; cursor: wait; }
   max-width: 100%;
 }
 
+.batch-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.batch-filter-input {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+}
+
+.batch-filter-input:focus {
+  outline: 2px solid var(--accent-2);
+}
+
+.batch-filter-clear {
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.batch-filter-clear:hover { color: var(--bad); border-color: var(--bad); }
+
 .csv-btn {
   background: var(--panel-2);
   color: var(--accent);
@@ -230,6 +266,46 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .batch-total-row:first-child { border-top: none; padding-top: 0; }
 
 .batch-total-row .amt { color: var(--accent); font-weight: 700; }
+
+.batch-net {
+  margin-top: 14px;
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+
+.batch-net h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.batch-net-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-net-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid #1d4d43;
+  background: #0f241f;
+  color: var(--good);
+  font-size: 0.85rem;
+}
+
+.batch-net-badge b { font-weight: 700; }
+
+.batch-net-badge.negative {
+  border-color: #5a2a2a;
+  background: #1c1012;
+  color: var(--bad);
+}
 
 .status-line {
   padding: 12px 14px;
@@ -562,6 +638,8 @@ footer a { color: var(--accent-2); }
   .badge.neutral { color: #2a4a9e !important; }
   .addr-chip, .memo-box, .status-line { background: #f4f4f4 !important; border-color: #999 !important; color: #111 !important; }
   .amount, .batch-total-row .amt { color: #0a7a5c !important; }
+  .batch-net-badge { border: 1px solid #999 !important; background: #fff !important; color: #0a7a5c !important; }
+  .batch-net-badge.negative { color: #b02a2a !important; }
   .note, .kv-grid dt, .examples-label { color: #555 !important; }
   .qr-box img { border: 1px solid #ccc; }
   .actions a.explorer-link {

@@ -49,9 +49,14 @@ screenshot of a block explorer.
 5. When you check more than one hash, a **batch summary** at the top adds up what actually arrived per token and
    what fees were paid per token (mint/faucet transfers are excluded from the totals) — useful for a merchant
    reconciling a day's payments, each possibly in a different stablecoin and with a different fee token.
-   - A **recipient filter** dropdown (auto-built from the "to" address of every payment in the batch) narrows the
-     list down to just the transactions that paid a specific address — so a merchant can pick out *their own*
-     payments from a batch of hashes that also include other people's, and the totals recompute for that filter.
+   - A **recipient filter** field narrows the list down to just the transactions that paid a specific address — so
+     a merchant can pick out *their own* payments from a batch of hashes that also include other people's, and the
+     totals recompute for that filter. It's a free-text input with a dropdown of addresses seen in this batch, but
+     you can also paste or type **any** address directly — useful when the batch doesn't yet contain a payment to
+     the merchant you're checking for, and you just want to confirm there isn't one.
+   - A **"Net after fees"** badge per token subtracts fees paid in that same token from what was received in it —
+     the number a bookkeeper actually wants, not two separate lines they have to subtract by hand. If a fee was
+     paid in a token nothing was received in, that's called out separately instead of being silently ignored.
    - A **sort** dropdown reorders the visible cards (default / amount high→low / amount low→high / block
      newest→oldest) without refetching anything.
    - **Export CSV** downloads exactly what's currently visible (respecting the filter and sort) as
@@ -114,7 +119,12 @@ npx serve docs
   it does not try to net out refunds or match payments to invoices beyond what the memo already says.
 - The recipient filter only matches transactions that are still resolvable (an unresolved/error hash in a batch
   drops out of a specific-recipient filter, since the tool can't tell who it was meant to pay); it's not sticky
-  across a brand-new lookup — picking a fresh batch resets the filter and sort back to default.
+  across a brand-new lookup — picking a fresh batch resets the filter and sort back to default. A typed address is
+  matched exactly (case-insensitive) — there's no fuzzy/partial matching, and an incomplete address (not yet 40 hex
+  characters) shows a hint instead of silently filtering everything out.
+- "Net after fees" only nets a fee against a payment received **in the same token** — it doesn't convert between
+  stablecoins (e.g. a BetaUSD payment with a fee paid in ThetaUSD isn't netted; both are still shown separately in
+  the totals above it).
 - "Live confirmations" on a card is opt-in per card and relies on the same ~8-second poll as the header; if the RPC
   is briefly unreachable it just stops advancing rather than showing a wrong number.
 - The live block indicator polls the public RPC every ~8 seconds; if the RPC is briefly unreachable it says "live
@@ -145,3 +155,4 @@ batch of 2" button that runs two of them together to show the batch summary:
 | ![readable memo, cross-token fee](screenshots/09-betausd.png) | ![batch of two with summary, mobile](screenshots/08-mobile.png) |
 | ![batch summary with filter/sort/CSV, desktop](screenshots/10-batch-two.png) | ![print / PDF receipt layout](screenshots/11-print-preview.png) |
 | ![batch filtered to one recipient](screenshots/12-batch-filtered.png) | ![live confirmations counting up on a card](screenshots/13-live-confirmations.png) |
+| ![net after fees badges in batch summary](screenshots/14-net-after-fees.png) | ![manually typed address narrows the batch filter](screenshots/15-filter-manual-typed.png) |

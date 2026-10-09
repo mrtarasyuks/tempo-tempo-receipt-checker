@@ -105,15 +105,23 @@
     return tokenInfoCache[addr];
   }
 
-  function formatAmount(valueHex, decimals) {
-    var value = BigInt(valueHex);
+  function formatBigAmount(value, decimals) {
+    var neg = value < BigInt(0);
+    var v = neg ? -value : value;
     var base = BigInt(10) ** BigInt(decimals);
-    var whole = value / base;
-    var frac = value % base;
+    var whole = v / base;
+    var frac = v % base;
     var wholeStr = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    if (frac === BigInt(0)) return wholeStr;
-    var fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
-    return fracStr.length ? wholeStr + "." + fracStr : wholeStr;
+    var out = wholeStr;
+    if (frac !== BigInt(0)) {
+      var fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+      if (fracStr.length) out = wholeStr + "." + fracStr;
+    }
+    return (neg ? "-" : "") + out;
+  }
+
+  function formatAmount(valueHex, decimals) {
+    return formatBigAmount(BigInt(valueHex), decimals);
   }
 
   function decodeMemo(memoTopic) {
@@ -489,6 +497,10 @@
       .sort(function (a, b) { return b.count - a.count; });
   }
 
+  function isValidAddress(addr) {
+    return /^0x[0-9a-fA-F]{40}$/.test(addr);
+  }
+
   function resultMatchesRecipient(r, filterAddr) {
     if (!filterAddr) return true;
     if (!r.ok) return false; // can't tell who an unresolved tx paid, so it drops out of a merchant filter
@@ -571,6 +583,17 @@
 
   function renderBatchSummary(allResults, visibleResults) {
     var box = $("batch-summary");
+
+    // Re-rendering on every keystroke in the filter input would otherwise steal
+    // focus — remember it and restore it (with cursor position) after rebuild.
+    var activeWasFilter = document.activeElement && document.activeElement.classList &&
+      document.activeElement.classList.contains("batch-filter-input");
+    var savedSelStart, savedSelEnd;
+    if (activeWasFilter) {
+      savedSelStart = document.activeElement.selectionStart;
+      savedSelEnd = document.activeElement.selectionEnd;
+    }
+
     box.innerHTML = "";
     if (allResults.length < 2) { box.hidden = true; return; }
     box.hidden = false;
@@ -579,18 +602,39 @@
 
     var controls = el("div", { "class": "batch-controls" });
 
-    var filterSelect = el("select", { "class": "batch-filter", "aria-label": "Filter by recipient address" });
-    filterSelect.appendChild(el("option", { value: "", text: "All recipients (" + allResults.length + " tx)" }));
-    recipients.forEach(function (r) {
-      var opt = el("option", { value: r.addr, text: shortAddr(r.addr) + " — " + r.count + " payment" + (r.count === 1 ? "" : "s") });
-      if (r.addr === batchState.filterAddr) opt.setAttribute("selected", "selected");
-      filterSelect.appendChild(opt);
+    var filterWrap = el("div", { "class": "batch-filter-wrap" });
+    var recipientsListId = "batch-recipients-list";
+    var filterInput = el("input", {
+      type: "text",
+      "class": "batch-filter-input",
+      list: recipientsListId,
+      placeholder: "Filter by recipient address (pick below or paste one)",
+      value: batchState.filterAddr,
+      "aria-label": "Filter by recipient address",
+      autocomplete: "off",
+      spellcheck: "false"
     });
-    filterSelect.addEventListener("change", function () {
-      batchState.filterAddr = filterSelect.value;
+    var recipientsList = el("datalist", { id: recipientsListId });
+    recipients.forEach(function (r) {
+      recipientsList.appendChild(el("option", {
+        value: r.addr,
+        label: shortAddr(r.addr) + " — " + r.count + " payment" + (r.count === 1 ? "" : "s")
+      }));
+    });
+    filterInput.addEventListener("input", function () {
+      batchState.filterAddr = filterInput.value.trim().toLowerCase();
       renderBatchList();
     });
-    controls.appendChild(filterSelect);
+    var clearFilterBtn = el("button", { type: "button", "class": "batch-filter-clear", title: "Clear filter", text: "✕" });
+    clearFilterBtn.hidden = !batchState.filterAddr;
+    clearFilterBtn.addEventListener("click", function () {
+      batchState.filterAddr = "";
+      renderBatchList();
+    });
+    filterWrap.appendChild(filterInput);
+    filterWrap.appendChild(clearFilterBtn);
+    filterWrap.appendChild(recipientsList);
+    controls.appendChild(filterWrap);
 
     var sortSelect = el("select", { "class": "batch-sort", "aria-label": "Sort transactions" });
     [
@@ -616,9 +660,12 @@
 
     box.appendChild(controls);
 
-    var filterNote = batchState.filterAddr
-      ? el("p", { "class": "note batch-note", text: "Showing only payments to " + shortAddr(batchState.filterAddr) + " — " + visibleResults.length + " of " + allResults.length + " transactions." })
-      : null;
+    var filterNote = null;
+    if (batchState.filterAddr && !isValidAddress(batchState.filterAddr)) {
+      filterNote = el("p", { "class": "note batch-note", text: "“" + batchState.filterAddr + "” isn't a full address yet (0x + 40 hex characters) — keep typing or pick one from the list." });
+    } else if (batchState.filterAddr) {
+      filterNote = el("p", { "class": "note batch-note", text: "Showing only payments to " + shortAddr(batchState.filterAddr) + " — " + visibleResults.length + " of " + allResults.length + " transactions." });
+    }
 
     var okVisible = visibleResults.filter(function (r) { return r.ok; });
     var failVisible = visibleResults.length - okVisible.length;
@@ -673,6 +720,36 @@
       totalsBox.appendChild(el("p", { "class": "note batch-note", text: "None of these transactions carried a recognized stablecoin payment." }));
     }
     box.appendChild(totalsBox);
+
+    // Net after fees: what a merchant actually keeps per token, once fees paid
+    // in that same token are subtracted from what was received in it.
+    var paymentTokens = Object.keys(paymentTotals);
+    if (paymentTokens.length) {
+      var netBox = el("div", { "class": "batch-net" });
+      netBox.appendChild(el("h3", { text: "Net after fees" }));
+      var netRow = el("div", { "class": "batch-net-badges" });
+      paymentTokens.forEach(function (addr) {
+        var t = paymentTotals[addr];
+        var feeSame = feeTotals[addr] ? feeTotals[addr].total : BigInt(0);
+        var net = t.total - feeSame;
+        netRow.appendChild(el("span", { "class": "batch-net-badge" + (net < BigInt(0) ? " negative" : "") }, [
+          document.createTextNode(t.symbol + ": "),
+          el("b", { text: formatBigAmount(net, t.decimals) + " " + t.symbol })
+        ]));
+      });
+      netBox.appendChild(netRow);
+      var untetheredFeeTokens = Object.keys(feeTotals).filter(function (addr) { return !paymentTotals[addr]; });
+      if (untetheredFeeTokens.length) {
+        var names = untetheredFeeTokens.map(function (addr) { return feeTotals[addr].symbol; }).join(", ");
+        netBox.appendChild(el("p", { "class": "note batch-note", text: "Fees paid in " + names + " aren't shown here — no payment was received in that same token to net them against." }));
+      }
+      box.appendChild(netBox);
+    }
+
+    if (activeWasFilter) {
+      filterInput.focus();
+      filterInput.setSelectionRange(savedSelStart, savedSelEnd);
+    }
   }
 
   function renderBatchList() {
