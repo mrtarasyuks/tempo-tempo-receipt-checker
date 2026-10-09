@@ -43,6 +43,16 @@
   var tokenInfoCache = {};
   var MAX_SELECTOR = { "symbol()": "0x95d89b41", "decimals()": "0x313ce567" };
 
+  // Receipt cards can opt into live confirmation updates; the live block poll
+  // (started once, see startLiveIndicator) notifies every subscribed card.
+  var liveConfirmSubscribers = [];
+  var latestKnownBlock = null;
+
+  function notifyLiveConfirmSubscribers(blockNum) {
+    latestKnownBlock = blockNum;
+    liveConfirmSubscribers.slice().forEach(function (fn) { fn(blockNum); });
+  }
+
   function $(id) { return document.getElementById(id); }
 
   function rpc(method, params) {
@@ -255,6 +265,37 @@
     ]);
     box.appendChild(badges);
 
+    // Optional live confirmations — opt-in per card, driven by the same block
+    // poll as the header's live indicator (see notifyLiveConfirmSubscribers).
+    var liveConfText = el("span", { "class": "live-conf-text", text: "watch confirmations update live" });
+    var liveConfCheckbox = el("input", { type: "checkbox" });
+    var liveConfUnsub = null;
+    function renderLiveConf(blockNum) {
+      if (blockNum === null || blockNum === undefined) {
+        liveConfText.textContent = "waiting for the next live block…";
+        return;
+      }
+      var diff = blockNum - txBlock;
+      if (diff < 0) diff = 0;
+      liveConfText.textContent = diff + " confirmation" + (diff === 1 ? "" : "s") + " since block " + txBlock + " · updating live";
+    }
+    liveConfCheckbox.addEventListener("change", function () {
+      if (liveConfCheckbox.checked) {
+        renderLiveConf(latestKnownBlock);
+        var handler = function (blockNum) { renderLiveConf(blockNum); };
+        liveConfirmSubscribers.push(handler);
+        liveConfUnsub = function () {
+          var idx = liveConfirmSubscribers.indexOf(handler);
+          if (idx !== -1) liveConfirmSubscribers.splice(idx, 1);
+        };
+      } else {
+        if (liveConfUnsub) { liveConfUnsub(); liveConfUnsub = null; }
+        liveConfText.textContent = "watch confirmations update live";
+      }
+    });
+    var liveConfLabel = el("label", { "class": "live-conf-toggle" }, [liveConfCheckbox, liveConfText]);
+    box.appendChild(liveConfLabel);
+
     var view = buildPaymentView(receipt);
 
     // Payment section
@@ -374,7 +415,7 @@
       qrBox
     ]));
 
-    return { el: box, view: view, status: status, tokenInfos: tokenInfos };
+    return { el: box, view: view, status: status, tokenInfos: tokenInfos, tx: tx, block: txBlock };
   }
 
   function errorCard(label, message) {
@@ -430,25 +471,169 @@
     });
   }
 
-  function renderBatchSummary(results) {
+  // Batch state persists across a filter/sort change so we don't refetch from the RPC.
+  var batchState = { results: [], filterAddr: "", sort: "default" };
+
+  function collectRecipients(results) {
+    var counts = {};
+    results.forEach(function (r) {
+      if (!r.ok) return;
+      r.card.view.payments.forEach(function (p) {
+        if (p.isMint) return;
+        var addr = p.to.toLowerCase();
+        counts[addr] = (counts[addr] || 0) + 1;
+      });
+    });
+    return Object.keys(counts)
+      .map(function (addr) { return { addr: addr, count: counts[addr] }; })
+      .sort(function (a, b) { return b.count - a.count; });
+  }
+
+  function resultMatchesRecipient(r, filterAddr) {
+    if (!filterAddr) return true;
+    if (!r.ok) return false; // can't tell who an unresolved tx paid, so it drops out of a merchant filter
+    return r.card.view.payments.some(function (p) {
+      return !p.isMint && p.to.toLowerCase() === filterAddr;
+    });
+  }
+
+  function paymentTotalValue(r) {
+    if (!r.ok) return BigInt(0);
+    return r.card.view.payments
+      .filter(function (p) { return !p.isMint; })
+      .reduce(function (acc, p) { return acc + BigInt(p.value); }, BigInt(0));
+  }
+
+  function sortResults(results, sort) {
+    var sorted = results.slice();
+    if (sort === "amount-desc" || sort === "amount-asc") {
+      sorted.sort(function (a, b) {
+        var diff = paymentTotalValue(a) - paymentTotalValue(b);
+        var d = diff > BigInt(0) ? 1 : (diff < BigInt(0) ? -1 : 0);
+        return sort === "amount-desc" ? -d : d;
+      });
+    } else if (sort === "block-desc" || sort === "block-asc") {
+      sorted.sort(function (a, b) {
+        var ba = a.ok ? a.card.block : -1;
+        var bb = b.ok ? b.card.block : -1;
+        return sort === "block-desc" ? bb - ba : ba - bb;
+      });
+    }
+    return sorted;
+  }
+
+  function csvEscape(v) {
+    v = v === null || v === undefined ? "" : String(v);
+    if (/[",\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+    return v;
+  }
+
+  function buildCsvRows(results) {
+    var rows = [["hash", "from", "to", "token", "amount", "memo"]];
+    results.forEach(function (r) {
+      if (!r.ok) {
+        rows.push([r.hash, "", "", "", "", "ERROR: could not resolve this transaction"]);
+        return;
+      }
+      var view = r.card.view;
+      var infos = r.card.tokenInfos;
+      if (!view.payments.length) {
+        rows.push([r.hash, r.card.tx.from, "", "", "", "no recognized stablecoin transfer"]);
+        return;
+      }
+      view.payments.forEach(function (p) {
+        var info = infos[p.token] || { symbol: shortAddr(p.token), decimals: 18 };
+        var memo = p.memo && !p.memo.empty ? (p.memo.text || p.memo.hex) : "";
+        rows.push([
+          r.hash,
+          p.isMint ? "faucet / mint" : p.from,
+          p.to,
+          info.symbol,
+          formatAmount(p.value, info.decimals),
+          memo
+        ]);
+      });
+    });
+    return rows;
+  }
+
+  function downloadCsv(results) {
+    var rows = buildCsvRows(results);
+    var csv = rows.map(function (row) { return row.map(csvEscape).join(","); }).join("\r\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = el("a", { href: url, download: "tempo-receipts-" + Date.now() + ".csv" });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function renderBatchSummary(allResults, visibleResults) {
     var box = $("batch-summary");
     box.innerHTML = "";
-    if (results.length < 2) { box.hidden = true; return; }
+    if (allResults.length < 2) { box.hidden = true; return; }
     box.hidden = false;
 
-    var okResults = results.filter(function (r) { return r.ok; });
-    var failCount = results.length - okResults.length;
+    var recipients = collectRecipients(allResults);
+
+    var controls = el("div", { "class": "batch-controls" });
+
+    var filterSelect = el("select", { "class": "batch-filter", "aria-label": "Filter by recipient address" });
+    filterSelect.appendChild(el("option", { value: "", text: "All recipients (" + allResults.length + " tx)" }));
+    recipients.forEach(function (r) {
+      var opt = el("option", { value: r.addr, text: shortAddr(r.addr) + " — " + r.count + " payment" + (r.count === 1 ? "" : "s") });
+      if (r.addr === batchState.filterAddr) opt.setAttribute("selected", "selected");
+      filterSelect.appendChild(opt);
+    });
+    filterSelect.addEventListener("change", function () {
+      batchState.filterAddr = filterSelect.value;
+      renderBatchList();
+    });
+    controls.appendChild(filterSelect);
+
+    var sortSelect = el("select", { "class": "batch-sort", "aria-label": "Sort transactions" });
+    [
+      ["default", "Default order"],
+      ["amount-desc", "Amount: high → low"],
+      ["amount-asc", "Amount: low → high"],
+      ["block-desc", "Block: newest first"],
+      ["block-asc", "Block: oldest first"]
+    ].forEach(function (pair) {
+      var opt = el("option", { value: pair[0], text: pair[1] });
+      if (pair[0] === batchState.sort) opt.setAttribute("selected", "selected");
+      sortSelect.appendChild(opt);
+    });
+    sortSelect.addEventListener("change", function () {
+      batchState.sort = sortSelect.value;
+      renderBatchList();
+    });
+    controls.appendChild(sortSelect);
+
+    var csvBtn = el("button", { type: "button", "class": "csv-btn", text: "⬇ Export CSV (" + visibleResults.length + ")" });
+    csvBtn.addEventListener("click", function () { downloadCsv(visibleResults); });
+    controls.appendChild(csvBtn);
+
+    box.appendChild(controls);
+
+    var filterNote = batchState.filterAddr
+      ? el("p", { "class": "note batch-note", text: "Showing only payments to " + shortAddr(batchState.filterAddr) + " — " + visibleResults.length + " of " + allResults.length + " transactions." })
+      : null;
+
+    var okVisible = visibleResults.filter(function (r) { return r.ok; });
+    var failVisible = visibleResults.length - okVisible.length;
 
     var paymentTotals = {}; // token addr -> { symbol, decimals, total: BigInt }
     var feeTotals = {};
     var paidCount = 0;
 
-    okResults.forEach(function (r) {
+    okVisible.forEach(function (r) {
       var view = r.card.view;
       var infos = r.card.tokenInfos;
       if (view.payments.length) paidCount++;
       view.payments.forEach(function (p) {
         if (p.isMint) return; // faucet mints aren't a merchant payment total
+        if (batchState.filterAddr && p.to.toLowerCase() !== batchState.filterAddr) return;
         var info = infos[p.token] || { symbol: shortAddr(p.token), decimals: 18 };
         if (!paymentTotals[p.token]) paymentTotals[p.token] = { symbol: info.symbol, decimals: info.decimals, total: BigInt(0) };
         paymentTotals[p.token].total += BigInt(p.value);
@@ -460,11 +645,12 @@
       }
     });
 
-    box.appendChild(el("h2", { text: "Batch summary — " + results.length + " transactions" }));
+    box.appendChild(el("h2", { text: "Batch summary — " + visibleResults.length + " transactions" }));
+    if (filterNote) box.appendChild(filterNote);
     var stats = el("div", { "class": "batch-stats" }, [
-      el("span", {}, [document.createTextNode("Checked: "), el("b", { text: String(results.length) })]),
+      el("span", {}, [document.createTextNode("Checked: "), el("b", { text: String(visibleResults.length) })]),
       el("span", {}, [document.createTextNode("With a payment: "), el("b", { text: String(paidCount) })]),
-      el("span", {}, [document.createTextNode("Failed to resolve: "), el("b", { text: String(failCount) })])
+      el("span", {}, [document.createTextNode("Failed to resolve: "), el("b", { text: String(failVisible) })])
     ]);
     box.appendChild(stats);
 
@@ -489,6 +675,20 @@
     box.appendChild(totalsBox);
   }
 
+  function renderBatchList() {
+    // Re-filters/sorts the already-built card elements from the last fetch —
+    // no refetch, and a card's live-confirmation toggle keeps its state even
+    // if the card is temporarily filtered out and shown again later.
+    var resultBox = $("result");
+    resultBox.innerHTML = "";
+
+    var visible = batchState.results.filter(function (r) { return resultMatchesRecipient(r, batchState.filterAddr); });
+    visible = sortResults(visible, batchState.sort);
+    visible.forEach(function (r) { resultBox.appendChild(r.ok ? r.card.el : r.el); });
+
+    renderBatchSummary(batchState.results, visible);
+  }
+
   function lookup(rawInput) {
     var hashes = (rawInput || "")
       .split(",")
@@ -498,6 +698,8 @@
     var resultBox = $("result");
     resultBox.innerHTML = "";
     $("batch-summary").hidden = true;
+    liveConfirmSubscribers = [];
+    batchState = { results: [], filterAddr: "", sort: "default" };
 
     if (!hashes.length) {
       setStatus("Paste a transaction hash (or several, comma-separated) to check a receipt.", "error");
@@ -518,11 +720,8 @@
       return lookupOne(h, label);
     })).then(function (results) {
       clearStatus();
-      resultBox.innerHTML = "";
-      results.forEach(function (r) {
-        resultBox.appendChild(r.ok ? r.card.el : r.el);
-      });
-      renderBatchSummary(results);
+      batchState.results = results;
+      renderBatchList();
       if (results.every(function (r) { return !r.ok; })) {
         setStatus("Couldn't resolve any of the given hashes on Tempo Moderato testnet. Check them and try again.", "error");
       }
@@ -541,7 +740,9 @@
       rpc("eth_blockNumber", []).then(function (hex) {
         misses = 0;
         box.classList.remove("stale");
-        text.textContent = "live · block #" + parseInt(hex, 16);
+        var num = parseInt(hex, 16);
+        text.textContent = "live · block #" + num;
+        notifyLiveConfirmSubscribers(num);
       }).catch(function () {
         misses++;
         if (misses >= 2) {

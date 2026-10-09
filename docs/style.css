@@ -172,6 +172,36 @@ button:disabled { opacity: 0.6; cursor: wait; }
   margin: 0 0 12px;
 }
 
+.batch-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.batch-controls select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  max-width: 100%;
+}
+
+.csv-btn {
+  background: var(--panel-2);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.csv-btn:hover { border-color: var(--accent); }
+
 .batch-summary .batch-stats {
   display: flex;
   gap: 18px;
@@ -265,6 +295,25 @@ button:disabled { opacity: 0.6; cursor: wait; }
   font-size: 0.78rem;
   font-weight: 600;
   border: 1px solid var(--border);
+}
+
+.live-conf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  width: fit-content;
+}
+
+.live-conf-toggle input {
+  cursor: pointer;
+}
+
+.live-conf-toggle:has(input:checked) .live-conf-text {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .badge.good { color: var(--good); border-color: #1d4d43; background: #0f241f; }
@@ -480,7 +529,8 @@ footer a { color: var(--accent-2); }
 @media print {
   body { background: #fff; color: #111; }
   header, #lookup-form, .examples, .status-line, .live-indicator,
-  footer, .actions .print-btn, .actions .share-btn, #batch-summary .batch-note {
+  footer, .actions .print-btn, .actions .share-btn, #batch-summary .batch-note,
+  .batch-controls, .live-conf-toggle {
     display: none !important;
   }
   .wrap { max-width: 100%; padding: 0; }
