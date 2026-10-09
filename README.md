@@ -60,7 +60,10 @@ screenshot of a block explorer.
    - A **sort** dropdown reorders the visible cards (default / amount high→low / amount low→high / block
      newest→oldest) without refetching anything.
    - **Export CSV** downloads exactly what's currently visible (respecting the filter and sort) as
-     `hash, from, to, token, amount, memo` — one row per payment, ready to paste into a spreadsheet for bookkeeping.
+     `hash, from, to, token, amount, net_after_fees, memo` — one row per payment, ready to paste into a spreadsheet
+     for bookkeeping. `net_after_fees` applies the same math as the "Net after fees" badge to that row: the fee is
+     subtracted only when it was paid in that row's own token, and only once per transaction, so the bookkeeper
+     gets the same number in the sheet as on screen without re-deriving it.
 6. Each receipt has a **"Print / save as PDF"** button; the page switches to a plain, white, one-receipt-per-page
    layout with a QR code pointing back at that exact `?tx=` link, so a merchant can hand a customer a paper or PDF
    proof of payment that anyone can re-verify by scanning it.

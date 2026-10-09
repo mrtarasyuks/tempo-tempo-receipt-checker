@@ -541,27 +541,40 @@
   }
 
   function buildCsvRows(results) {
-    var rows = [["hash", "from", "to", "token", "amount", "memo"]];
+    var rows = [["hash", "from", "to", "token", "amount", "net_after_fees", "memo"]];
     results.forEach(function (r) {
       if (!r.ok) {
-        rows.push([r.hash, "", "", "", "", "ERROR: could not resolve this transaction"]);
+        rows.push([r.hash, "", "", "", "", "", "ERROR: could not resolve this transaction"]);
         return;
       }
       var view = r.card.view;
       var infos = r.card.tokenInfos;
       if (!view.payments.length) {
-        rows.push([r.hash, r.card.tx.from, "", "", "", "no recognized stablecoin transfer"]);
+        rows.push([r.hash, r.card.tx.from, "", "", "", "", "no recognized stablecoin transfer"]);
         return;
       }
+      // Same math as the "Net after fees" batch badge, applied per payment: the
+      // network fee is only subtracted from payments paid in that same token,
+      // and only once per transaction even if it carried several such payments.
+      var feeToken = view.fee ? view.fee.token : null;
+      var feeRemaining = view.fee ? BigInt(view.fee.value) : null;
       view.payments.forEach(function (p) {
         var info = infos[p.token] || { symbol: shortAddr(p.token), decimals: 18 };
         var memo = p.memo && !p.memo.empty ? (p.memo.text || p.memo.hex) : "";
+        var netCell = "";
+        if (!p.isMint && feeToken && p.token === feeToken) {
+          var value = BigInt(p.value);
+          var deduct = value < feeRemaining ? value : feeRemaining;
+          netCell = formatBigAmount(value - deduct, info.decimals) + " " + info.symbol;
+          feeRemaining -= deduct;
+        }
         rows.push([
           r.hash,
           p.isMint ? "faucet / mint" : p.from,
           p.to,
           info.symbol,
           formatAmount(p.value, info.decimals),
+          netCell,
           memo
         ]);
       });
