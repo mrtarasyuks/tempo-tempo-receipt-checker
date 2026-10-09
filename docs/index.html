@@ -10,10 +10,17 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>🧾 Tempo Receipt Checker</h1>
+    <div class="title-row">
+      <h1>🧾 Tempo Receipt Checker</h1>
+      <span id="live-indicator" class="live-indicator" hidden>
+        <span class="live-dot"></span>
+        <span id="live-text">connecting…</span>
+      </span>
+    </div>
     <p class="subtitle">
       Paste a transaction hash from <strong>Tempo Moderato testnet</strong> and get a plain-English payment
       receipt &mdash; who paid whom, in which stablecoin, what the memo says, and which token covered the fee.
+      Paste several hashes separated by commas to reconcile a batch of payments at once.
       Read-only. No wallet. No signing.
     </p>
   </header>
@@ -22,9 +29,9 @@
     <input
       id="tx-input"
       type="text"
-      placeholder="0x... transaction hash"
+      placeholder="0x... transaction hash (or several, comma-separated)"
       spellcheck="false"
-      aria-label="Transaction hash"
+      aria-label="Transaction hash or hashes"
     >
     <button type="submit">Check receipt</button>
   </form>
@@ -32,11 +39,14 @@
   <div class="examples">
     <span class="examples-label">Try a real example:</span>
     <div id="example-buttons"></div>
+    <button type="button" id="batch-example-btn" class="example-btn batch-example">Try a batch of 2 ⇒</button>
   </div>
 
   <div id="status-line" class="status-line" hidden></div>
 
-  <div id="result" class="result" hidden></div>
+  <div id="batch-summary" class="batch-summary" hidden></div>
+
+  <div id="result" class="result-list"></div>
 
   <footer>
     <p>

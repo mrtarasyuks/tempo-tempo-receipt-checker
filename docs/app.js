@@ -228,10 +228,20 @@
     return { fee: feeEntry, payments: payments, hadMint: mintLogs.length > 0 };
   }
 
-  function renderResult(tx, receipt, finalizedNumber, tokenInfos) {
-    var box = $("result");
-    box.innerHTML = "";
-    box.hidden = false;
+  function qrImgUrl(data) {
+    return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=4&data=" + encodeURIComponent(data);
+  }
+
+  function buildReceiptCard(tx, receipt, finalizedNumber, tokenInfos, label) {
+    var box = el("div", { "class": "receipt-card" });
+
+    var printHeader = el("div", { "class": "print-only print-header" }, [
+      el("h2", { text: "🧾 Tempo Payment Receipt" }),
+      el("span", { text: "Checked " + new Date().toLocaleString() + " · explore.testnet.tempo.xyz" })
+    ]);
+    box.appendChild(printHeader);
+
+    if (label) box.appendChild(el("p", { "class": "receipt-card-label", text: label }));
 
     var status = receipt.status === "0x1";
     var txBlock = parseInt(receipt.blockNumber, 16);
@@ -338,39 +348,63 @@
     var actions = el("div", { "class": "actions" }, [
       el("a", { "class": "explorer-link", href: EXPLORER_TX + tx.hash, target: "_blank", rel: "noopener", text: "View on explorer ↗" })
     ]);
-    var shareBtn = el("button", { type: "button", text: "Copy receipt link" });
+    var shareBtn = el("button", { type: "button", "class": "share-btn", text: "Copy receipt link" });
+    var receiptUrl = location.origin + location.pathname + "?tx=" + tx.hash;
     shareBtn.addEventListener("click", function () {
-      var url = location.origin + location.pathname + "?tx=" + tx.hash;
-      navigator.clipboard.writeText(url).then(function () {
+      navigator.clipboard.writeText(receiptUrl).then(function () {
         shareBtn.textContent = "Link copied!";
         setTimeout(function () { shareBtn.textContent = "Copy receipt link"; }, 1500);
       });
     });
     actions.appendChild(shareBtn);
+    var printBtn = el("button", { type: "button", "class": "print-btn", text: "🖨 Print / save as PDF" });
+    printBtn.addEventListener("click", function () { window.print(); });
+    actions.appendChild(printBtn);
     box.appendChild(actions);
+
+    // Footer: QR code pointing back at this exact receipt, for a printed hand-off to a customer
+    var qrImg = el("img", { src: qrImgUrl(receiptUrl), alt: "QR code linking to this receipt", loading: "lazy" });
+    qrImg.addEventListener("error", function () { qrBox.hidden = true; });
+    var qrBox = el("div", { "class": "qr-box" }, [
+      qrImg,
+      el("span", { text: "Scan to re-check this receipt" })
+    ]);
+    box.appendChild(el("div", { "class": "receipt-foot" }, [
+      el("div", { "class": "note", text: "Source: rpc.moderato.tempo.xyz, block " + txBlock + ", checked " + new Date().toLocaleString() + "." }),
+      qrBox
+    ]));
+
+    return { el: box, view: view, status: status, tokenInfos: tokenInfos };
   }
 
-  function lookup(rawHash) {
-    var hash = (rawHash || "").trim();
-    $("result").hidden = true;
+  function errorCard(label, message) {
+    var box = el("div", { "class": "receipt-card" });
+    if (label) box.appendChild(el("p", { "class": "receipt-card-label", text: label }));
+    box.appendChild(el("p", { "class": "note", text: message }));
+    return box;
+  }
 
+  function lookupOne(hash, label) {
     if (!isValidHash(hash)) {
-      setStatus("That doesn't look like a transaction hash. It should be 0x followed by 64 hex characters.", "error");
-      return;
+      return Promise.resolve({
+        ok: false,
+        hash: hash,
+        el: errorCard(label, "“" + hash + "” doesn't look like a transaction hash — it should be 0x followed by 64 hex characters.")
+      });
     }
 
-    setStatus("Fetching from Tempo Moderato testnet…", "loading");
-    history.replaceState(null, "", location.pathname + "?tx=" + hash);
-
-    Promise.all([
+    return Promise.all([
       rpc("eth_getTransactionByHash", [hash]),
       rpc("eth_getTransactionReceipt", [hash]),
       rpc("eth_getBlockByNumber", ["finalized", false]).catch(function () { return null; })
     ]).then(function (res) {
       var tx = res[0], receipt = res[1], finalizedBlock = res[2];
       if (!tx || !receipt) {
-        setStatus("No transaction found with that hash on Tempo Moderato testnet (chain id 42431). Check the hash and make sure it's from this network.", "error");
-        return;
+        return {
+          ok: false,
+          hash: hash,
+          el: errorCard(label, "No transaction found for " + hash + " on Tempo Moderato testnet (chain id 42431).")
+        };
       }
       var finalizedNumber = finalizedBlock ? parseInt(finalizedBlock.number, 16) : null;
 
@@ -380,24 +414,158 @@
         if (l.topics[0] === TRANSFER_TOPIC) tokenAddrs[l.address.toLowerCase()] = true;
       });
 
-      Promise.all(Object.keys(tokenAddrs).map(function (addr) {
+      return Promise.all(Object.keys(tokenAddrs).map(function (addr) {
         return getTokenInfo(addr).then(function (info) { return [addr, info]; });
       })).then(function (pairs) {
         var tokenInfos = {};
         pairs.forEach(function (p) { tokenInfos[p[0]] = p[1]; });
-        clearStatus();
-        renderResult(tx, receipt, finalizedNumber, tokenInfos);
+        return { ok: true, hash: hash, card: buildReceiptCard(tx, receipt, finalizedNumber, tokenInfos, label) };
       });
     }).catch(function (err) {
-      setStatus("Couldn't reach the Tempo RPC: " + err.message + ". Try again in a moment.", "error");
+      return {
+        ok: false,
+        hash: hash,
+        el: errorCard(label, "Couldn't reach the Tempo RPC for " + hash + ": " + err.message + ".")
+      };
     });
+  }
+
+  function renderBatchSummary(results) {
+    var box = $("batch-summary");
+    box.innerHTML = "";
+    if (results.length < 2) { box.hidden = true; return; }
+    box.hidden = false;
+
+    var okResults = results.filter(function (r) { return r.ok; });
+    var failCount = results.length - okResults.length;
+
+    var paymentTotals = {}; // token addr -> { symbol, decimals, total: BigInt }
+    var feeTotals = {};
+    var paidCount = 0;
+
+    okResults.forEach(function (r) {
+      var view = r.card.view;
+      var infos = r.card.tokenInfos;
+      if (view.payments.length) paidCount++;
+      view.payments.forEach(function (p) {
+        if (p.isMint) return; // faucet mints aren't a merchant payment total
+        var info = infos[p.token] || { symbol: shortAddr(p.token), decimals: 18 };
+        if (!paymentTotals[p.token]) paymentTotals[p.token] = { symbol: info.symbol, decimals: info.decimals, total: BigInt(0) };
+        paymentTotals[p.token].total += BigInt(p.value);
+      });
+      if (view.fee) {
+        var feeInfo = infos[view.fee.token] || { symbol: shortAddr(view.fee.token), decimals: 18 };
+        if (!feeTotals[view.fee.token]) feeTotals[view.fee.token] = { symbol: feeInfo.symbol, decimals: feeInfo.decimals, total: BigInt(0) };
+        feeTotals[view.fee.token].total += BigInt(view.fee.value);
+      }
+    });
+
+    box.appendChild(el("h2", { text: "Batch summary — " + results.length + " transactions" }));
+    var stats = el("div", { "class": "batch-stats" }, [
+      el("span", {}, [document.createTextNode("Checked: "), el("b", { text: String(results.length) })]),
+      el("span", {}, [document.createTextNode("With a payment: "), el("b", { text: String(paidCount) })]),
+      el("span", {}, [document.createTextNode("Failed to resolve: "), el("b", { text: String(failCount) })])
+    ]);
+    box.appendChild(stats);
+
+    var totalsBox = el("div", { "class": "batch-totals" });
+    Object.keys(paymentTotals).forEach(function (addr) {
+      var t = paymentTotals[addr];
+      totalsBox.appendChild(el("div", { "class": "batch-total-row" }, [
+        el("span", { text: "Total received, " + t.symbol }),
+        el("span", { "class": "amt", text: formatAmount("0x" + t.total.toString(16), t.decimals) + " " + t.symbol })
+      ]));
+    });
+    Object.keys(feeTotals).forEach(function (addr) {
+      var t = feeTotals[addr];
+      totalsBox.appendChild(el("div", { "class": "batch-total-row" }, [
+        el("span", { text: "Total fees paid, " + t.symbol }),
+        el("span", { "class": "amt", text: formatAmount("0x" + t.total.toString(16), t.decimals) + " " + t.symbol })
+      ]));
+    });
+    if (!Object.keys(paymentTotals).length) {
+      totalsBox.appendChild(el("p", { "class": "note batch-note", text: "None of these transactions carried a recognized stablecoin payment." }));
+    }
+    box.appendChild(totalsBox);
+  }
+
+  function lookup(rawInput) {
+    var hashes = (rawInput || "")
+      .split(",")
+      .map(function (h) { return h.trim(); })
+      .filter(function (h) { return h.length > 0; });
+
+    var resultBox = $("result");
+    resultBox.innerHTML = "";
+    $("batch-summary").hidden = true;
+
+    if (!hashes.length) {
+      setStatus("Paste a transaction hash (or several, comma-separated) to check a receipt.", "error");
+      return;
+    }
+
+    setStatus(
+      hashes.length === 1
+        ? "Fetching from Tempo Moderato testnet…"
+        : "Fetching " + hashes.length + " transactions from Tempo Moderato testnet…",
+      "loading"
+    );
+    history.replaceState(null, "", location.pathname + "?tx=" + hashes.join(","));
+
+    var multi = hashes.length > 1;
+    Promise.all(hashes.map(function (h, idx) {
+      var label = multi ? "Transaction " + (idx + 1) + " of " + hashes.length : null;
+      return lookupOne(h, label);
+    })).then(function (results) {
+      clearStatus();
+      resultBox.innerHTML = "";
+      results.forEach(function (r) {
+        resultBox.appendChild(r.ok ? r.card.el : r.el);
+      });
+      renderBatchSummary(results);
+      if (results.every(function (r) { return !r.ok; })) {
+        setStatus("Couldn't resolve any of the given hashes on Tempo Moderato testnet. Check them and try again.", "error");
+      }
+    });
+  }
+
+  var LIVE_POLL_MS = 8000;
+
+  function startLiveIndicator() {
+    var box = $("live-indicator");
+    var text = $("live-text");
+    box.hidden = false;
+    var misses = 0;
+
+    function poll() {
+      rpc("eth_blockNumber", []).then(function (hex) {
+        misses = 0;
+        box.classList.remove("stale");
+        text.textContent = "live · block #" + parseInt(hex, 16);
+      }).catch(function () {
+        misses++;
+        if (misses >= 2) {
+          box.classList.add("stale");
+          text.textContent = "live data unavailable";
+        }
+      });
+    }
+
+    poll();
+    setInterval(poll, LIVE_POLL_MS);
   }
 
   document.addEventListener("DOMContentLoaded", function () {
     renderExamples();
+    startLiveIndicator();
     $("lookup-form").addEventListener("submit", function (e) {
       e.preventDefault();
       lookup($("tx-input").value);
+    });
+    $("batch-example-btn").addEventListener("click", function () {
+      var batch = EXAMPLES.slice(0, 2).map(function (ex) { return ex.hash; }).join(",");
+      $("tx-input").value = batch;
+      lookup(batch);
     });
 
     var params = new URLSearchParams(location.search);
